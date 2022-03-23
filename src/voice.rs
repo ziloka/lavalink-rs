@@ -7,8 +7,8 @@ use tokio::time::{sleep, Duration};
 
 pub async fn join(
     lavalink: &LavalinkClient,
-    guild_id: impl Into<GuildId>,
-    channel_id: impl Into<ChannelId>,
+    guild_id: impl Into<GuildId> + Send,
+    channel_id: impl Into<ChannelId> + Send,
 ) -> LavalinkResult<ConnectionInfo> {
     let guild_id = guild_id.into();
     let channel_id = channel_id.into();
@@ -32,7 +32,10 @@ pub async fn join(
     wait_for_full_connection_info_insert(lavalink, guild_id, None).await
 }
 
-pub async fn leave(lavalink: &LavalinkClient, guild_id: impl Into<GuildId>) -> LavalinkResult<()> {
+pub async fn leave(
+    lavalink: &LavalinkClient,
+    guild_id: impl Into<GuildId> + Send,
+) -> LavalinkResult<()> {
     let guild_id = guild_id.into();
 
     call_discord_gateway(
@@ -56,7 +59,7 @@ pub async fn leave(lavalink: &LavalinkClient, guild_id: impl Into<GuildId>) -> L
 
 pub async fn wait_for_full_connection_info_insert(
     lavalink: &LavalinkClient,
-    guild_id: impl Into<GuildId>,
+    guild_id: impl Into<GuildId> + Send,
     event_count: Option<usize>,
 ) -> LavalinkResult<ConnectionInfo> {
     let guild_id = guild_id.into();
@@ -81,7 +84,7 @@ pub async fn wait_for_full_connection_info_insert(
 
 pub async fn wait_for_connection_info_remove(
     lavalink: &LavalinkClient,
-    guild_id: impl Into<GuildId>,
+    guild_id: impl Into<GuildId> + Send,
     event_count: Option<usize>,
 ) -> LavalinkResult<()> {
     let guild_id = guild_id.into();
@@ -104,7 +107,7 @@ pub async fn wait_for_connection_info_remove(
 
 pub async fn raw_handle_event_voice_server_update(
     lavalink: &LavalinkClient,
-    guild_id: impl Into<GuildId>,
+    guild_id: impl Into<GuildId> + Send,
     endpoint: String,
     token: String,
 ) {

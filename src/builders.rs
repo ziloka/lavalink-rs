@@ -175,17 +175,8 @@ impl PlayParameters {
             },
         };
 
-        let client = self.client.inner.lock();
-
         SendOpcode::Play(payload)
-            .send(
-                self.guild_id,
-                client
-                    .socket_write
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(self.guild_id, &self.client.socket_write()?)
             .await?;
 
         Ok(())
@@ -258,28 +249,22 @@ impl PlayParameters {
                                 end_time: track.end_time,
                             };
 
-                            let socket_write = {
-                                let client_lock = client_clone.inner.lock();
-                                client_lock.socket_write.clone()
-                            };
+                            let socket_write =
+                                client_clone.inner.lock().socket_write.lock().clone();
 
-                            {
-                                let mut socket = socket_write.lock();
-
-                                if let Some(socket) = socket.as_mut() {
-                                    if let Err(why) = crate::model::SendOpcode::Play(payload)
-                                        .send(guild_id, socket)
-                                        .await
-                                    {
-                                        error!("Error playing queue on guild {}: {}", guild_id, why);
-                                    }
-                                } else {
-                                    error!(
-                                        "Error playing queue on guild {}: {}",
-                                        guild_id,
-                                        LavalinkError::MissingLavalinkSocket
-                                    );
+                            if let Some(socket) = socket_write.as_ref() {
+                                if let Err(why) = crate::model::SendOpcode::Play(payload)
+                                    .send(guild_id, socket)
+                                    .await
+                                {
+                                    error!("Error playing queue on guild {}: {}", guild_id, why);
                                 }
+                            } else {
+                                error!(
+                                    "Error playing queue on guild {}: {}",
+                                    guild_id,
+                                    LavalinkError::MissingLavalinkSocket
+                                );
                             }
                         }
                     } else {

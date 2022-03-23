@@ -5,9 +5,7 @@ use crate::voice::{raw_handle_event_voice_server_update, raw_handle_event_voice_
 use crate::LavalinkClient;
 
 use async_tungstenite::tokio::connect_async;
-use futures::stream::StreamExt;
-#[cfg(feature = "discord-gateway")]
-use futures::SinkExt;
+use futures::{stream::StreamExt, SinkExt};
 use http::Request;
 #[cfg(feature = "discord-gateway")]
 use parking_lot::RwLock;
@@ -299,9 +297,18 @@ pub async fn lavalink_event_loop(
             Ok(x) => x,
         };
 
-        let (write, mut read) = ws_stream.split();
+        let (mut write, mut read) = ws_stream.split();
+        let (write_chan, mut read_chan) = tokio::sync::mpsc::unbounded_channel();
 
-        *client.inner.lock().socket_write.lock() = Some(write);
+        tokio::spawn(async move {
+            while let Some(msg) = read_chan.recv().await {
+                if let Err(err) = write.send(msg).await {
+                    error!("Error playing queue: {}", err);
+                }
+            }
+        });
+
+        *client.inner.lock().socket_write.lock() = Some(write_chan);
 
         while let Some(Ok(resp)) = read.next().await {
             if let TungsteniteMessage::Text(x) = &resp {

@@ -1,5 +1,6 @@
 //! A Lavalink and Andesite API wrapper library for every tokio based discord bot library.
-#![deny(clippy::unused_async, clippy::await_holding_lock, clippy::pedantic)]
+#![deny(clippy::unused_async, clippy::await_holding_lock)]
+#![warn(clippy::pedantic, clippy::future_not_send)]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::missing_panics_doc,
@@ -31,6 +32,7 @@ pub mod voice;
 
 /// Re-export to be used with the event handler.
 pub use async_trait::async_trait;
+use tokio::sync::mpsc::UnboundedSender;
 /// Re-export to be used with the Node data.
 pub use typemap_rev;
 
@@ -65,8 +67,6 @@ use parking_lot::Mutex;
 use tokio::net::TcpStream;
 
 use regex::Regex;
-
-use futures::stream::SplitSink;
 
 use async_tungstenite::{
     stream::Stream, tokio::TokioAdapter, tungstenite::Message as TungsteniteMessage,
@@ -107,10 +107,7 @@ pub struct LavalinkClientInner {
     pub headers: HeaderMap,
 
     /// The sender websocket split.
-    pub socket_write: Arc<Mutex<Option<SplitSink<WsStream, TungsteniteMessage>>>>,
-    // cannot be cloned, and cannot be behind a lock
-    // because it would always be open by the event loop.
-    //pub socket_read: SplitStream<WsStream>,
+    pub socket_write: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<TungsteniteMessage>>>>,
     pub socket_uri: String,
 
     //_shard_id: Option<ShardId>,
@@ -245,6 +242,17 @@ impl LavalinkClient {
         Ok(client)
     }
 
+    pub(crate) fn socket_write(&self) -> LavalinkResult<UnboundedSender<TungsteniteMessage>> {
+        self.inner
+            .lock()
+            .socket_write
+            .clone()
+            .lock()
+            .as_ref()
+            .map(Clone::clone)
+            .ok_or(LavalinkError::MissingLavalinkSocket)
+    }
+
     /// Returns a builder to be used to create a Client.
     ///
     /// ```rust
@@ -300,7 +308,7 @@ impl LavalinkClient {
     }
 
     /// Returns the tracks from the URL or query provided.
-    pub async fn get_tracks(&self, query: impl ToString) -> LavalinkResult<Tracks> {
+    pub async fn get_tracks(&self, query: impl ToString + Send) -> LavalinkResult<Tracks> {
         let (rest_uri, headers) = {
             let client = self.inner.lock();
             (client.rest_uri.to_string(), client.headers.clone())
@@ -321,7 +329,10 @@ impl LavalinkClient {
     }
 
     /// Will automatically search the query on youtube if it's not a valid URL.
-    pub async fn auto_search_tracks(&self, query: impl ToString) -> LavalinkResult<Tracks> {
+    pub async fn auto_search_tracks(
+        &self,
+        query: impl ToString + Sync + Send,
+    ) -> LavalinkResult<Tracks> {
         let r = Regex::new(r"https?://(?:www\.)?.+").unwrap();
         if r.is_match(&query.to_string()) {
             self.get_tracks(query.to_string()).await
@@ -333,13 +344,13 @@ impl LavalinkClient {
 
     /// Returns tracks from the search query.
     /// Uses youtube to search.
-    pub async fn search_tracks(&self, query: impl ToString) -> LavalinkResult<Tracks> {
+    pub async fn search_tracks(&self, query: impl ToString + Send) -> LavalinkResult<Tracks> {
         self.get_tracks(format!("ytsearch:{}", query.to_string()))
             .await
     }
 
     /// Decodes a track to it's information
-    pub async fn decode_track(&self, track: impl ToString) -> LavalinkResult<Info> {
+    pub async fn decode_track(&self, track: impl ToString + Send) -> LavalinkResult<Info> {
         let (rest_uri, headers) = {
             let client = self.inner.lock();
             (client.rest_uri.to_string(), client.headers.clone())
@@ -383,20 +394,11 @@ impl LavalinkClient {
             event,
         };
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::VoiceUpdate(payload)
-            .send(
-                connection_info.guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(connection_info.guild_id, &self.socket_write()?)
             .await?;
 
+        let client = self.inner.lock();
         if !client.nodes.contains_key(&connection_info.guild_id.0) {
             client
                 .nodes
@@ -442,20 +444,11 @@ impl LavalinkClient {
 
         let payload = crate::model::VoiceUpdate { session_id, event };
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::VoiceUpdate(payload)
-            .send(
-                connection_info.guild_id.unwrap(),
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(connection_info.guild_id.unwrap(), &self.socket_write()?)
             .await?;
 
+        let client = self.inner.lock();
         if !client
             .nodes
             .contains_key(&connection_info.guild_id.unwrap().0)
@@ -503,48 +496,40 @@ impl LavalinkClient {
     ///     loops.remove(&guild_id.0);
     /// }
     /// ```
-    pub async fn destroy(&self, guild_id: impl Into<GuildId>) -> LavalinkResult<()> {
+    pub async fn destroy<T: Into<GuildId> + Send>(&self, guild_id: T) -> LavalinkResult<()> {
         let guild_id = guild_id.into();
 
-        let client = self.inner.lock();
+        let socket_write = {
+            let client = self.inner.lock();
 
-        if let Some(mut node) = client.nodes.get_mut(&guild_id.0) {
-            node.now_playing = None;
+            if let Some(mut node) = client.nodes.get_mut(&guild_id.0) {
+                node.now_playing = None;
 
-            if !node.queue.is_empty() {
-                node.queue.remove(0);
+                if !node.queue.is_empty() {
+                    node.queue.remove(0);
+                }
             }
-        }
+
+            client
+                .socket_write
+                .clone()
+                .lock()
+                .as_ref()
+                .map(Clone::clone)
+                .ok_or(LavalinkError::MissingLavalinkSocket)?
+        };
 
         crate::model::SendOpcode::Destroy
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &socket_write)
             .await?;
 
         Ok(())
     }
 
     /// Stops the current player.
-    pub async fn stop(&self, guild_id: impl Into<GuildId>) -> LavalinkResult<()> {
-        let client = self.inner.lock();
-
+    pub async fn stop(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         crate::model::SendOpcode::Stop
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
@@ -554,7 +539,7 @@ impl LavalinkClient {
     ///
     /// If nothing is in the queue, the currently playing track will keep playing.
     /// Check if the queue is empty and run `stop()` if that's the case.
-    pub async fn skip(&self, guild_id: impl Into<GuildId>) -> Option<TrackQueue> {
+    pub async fn skip(&self, guild_id: impl Into<GuildId> + Send) -> Option<TrackQueue> {
         let client = self.inner.lock();
 
         let mut node = client.nodes.get_mut(&guild_id.into().0)?;
@@ -569,7 +554,11 @@ impl LavalinkClient {
     }
 
     /// Sets the pause status.
-    pub async fn set_pause(&self, guild_id: impl Into<GuildId>, pause: bool) -> LavalinkResult<()> {
+    pub async fn set_pause(
+        &self,
+        guild_id: impl Into<GuildId> + Send,
+        pause: bool,
+    ) -> LavalinkResult<()> {
         let guild_id = guild_id.into().0;
         let payload = crate::model::Pause { pause };
 
@@ -581,51 +570,35 @@ impl LavalinkClient {
             }
         }
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::Pause(payload)
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
     }
 
     /// Sets pause status to `True`
-    pub async fn pause(&self, guild_id: impl Into<GuildId>) -> LavalinkResult<()> {
+    pub async fn pause(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         self.set_pause(guild_id, true).await
     }
 
     /// Sets pause status to `False`
-    pub async fn resume(&self, guild_id: impl Into<GuildId>) -> LavalinkResult<()> {
+    pub async fn resume(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         self.set_pause(guild_id, false).await
     }
 
     /// Jumps to a specific time in the currently playing track.
-    pub async fn seek(&self, guild_id: impl Into<GuildId>, time: Duration) -> LavalinkResult<()> {
+    pub async fn seek(
+        &self,
+        guild_id: impl Into<GuildId> + Send,
+        time: Duration,
+    ) -> LavalinkResult<()> {
         let payload = crate::model::Seek {
             position: time.as_millis() as u64,
         };
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::Seek(payload)
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
@@ -634,37 +607,35 @@ impl LavalinkClient {
     /// Alias to `seek()`
     pub async fn jump_to_time(
         &self,
-        guild_id: impl Into<GuildId>,
+        guild_id: impl Into<GuildId> + Send,
         time: Duration,
     ) -> LavalinkResult<()> {
         self.seek(guild_id, time).await
     }
 
     /// Alias to `seek()`
-    pub async fn scrub(&self, guild_id: impl Into<GuildId>, time: Duration) -> LavalinkResult<()> {
+    pub async fn scrub(
+        &self,
+        guild_id: impl Into<GuildId> + Send,
+        time: Duration,
+    ) -> LavalinkResult<()> {
         self.seek(guild_id, time).await
     }
 
     /// Sets the volume of the player.
-    pub async fn volume(&self, guild_id: impl Into<GuildId>, volume: u16) -> LavalinkResult<()> {
+    pub async fn volume(
+        &self,
+        guild_id: impl Into<GuildId> + Send,
+        volume: u16,
+    ) -> LavalinkResult<()> {
         let good_volume = max(min(volume, 1000), 0);
 
         let payload = crate::model::Volume {
             volume: good_volume,
         };
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::Volume(payload)
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
@@ -679,7 +650,7 @@ impl LavalinkClient {
     /// - Modifying the gain could also change the volume of the output.
     pub async fn equalize_all(
         &self,
-        guild_id: impl Into<GuildId>,
+        guild_id: impl Into<GuildId> + Send,
         bands: [f64; 15],
     ) -> LavalinkResult<()> {
         let bands = bands
@@ -693,18 +664,8 @@ impl LavalinkClient {
 
         let payload = crate::model::Equalizer { bands };
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::Equalizer(payload)
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
@@ -715,23 +676,13 @@ impl LavalinkClient {
     /// Unmentioned bands will remain unmodified.
     pub async fn equalize_dynamic(
         &self,
-        guild_id: impl Into<GuildId>,
+        guild_id: impl Into<GuildId> + Send,
         bands: Vec<Band>,
     ) -> LavalinkResult<()> {
         let payload = crate::model::Equalizer { bands };
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::Equalizer(payload)
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
@@ -740,30 +691,20 @@ impl LavalinkClient {
     /// Equalizes a specific band.
     pub async fn equalize_band(
         &self,
-        guild_id: impl Into<GuildId>,
+        guild_id: impl Into<GuildId> + Send,
         band: crate::model::Band,
     ) -> LavalinkResult<()> {
         let payload = crate::model::Equalizer { bands: vec![band] };
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::Equalizer(payload)
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
     }
 
     /// Resets all equalizer levels.
-    pub async fn equalize_reset(&self, guild_id: impl Into<GuildId>) -> LavalinkResult<()> {
+    pub async fn equalize_reset(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         let bands = (0..=14)
             .map(|i| crate::model::Band {
                 band: i as u8,
@@ -773,18 +714,8 @@ impl LavalinkClient {
 
         let payload = crate::model::Equalizer { bands };
 
-        let client = self.inner.lock();
-
         crate::model::SendOpcode::Equalizer(payload)
-            .send(
-                guild_id,
-                client
-                    .socket_write
-                    .clone()
-                    .lock()
-                    .as_mut()
-                    .ok_or(LavalinkError::MissingLavalinkSocket)?,
-            )
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
@@ -831,15 +762,15 @@ impl LavalinkClient {
     /// Joins the voice channel via the discord gateway.
     pub async fn join(
         &self,
-        guild_id: impl Into<GuildId>,
-        channel_id: impl Into<ChannelId>,
+        guild_id: impl Into<GuildId> + Send,
+        channel_id: impl Into<ChannelId> + Send,
     ) -> LavalinkResult<ConnectionInfo> {
         crate::voice::join(self, guild_id, channel_id).await
     }
 
     #[cfg(feature = "discord-gateway")]
     /// Joins the voice channel from the guild using the discord gateway.
-    pub async fn leave(&self, guild_id: impl Into<GuildId>) -> LavalinkResult<()> {
+    pub async fn leave(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         crate::voice::leave(self, guild_id).await
     }
 }

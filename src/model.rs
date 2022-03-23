@@ -1,7 +1,6 @@
 // oh god, this module looks terrible
 
-use crate::error::LavalinkResult;
-use crate::WsStream;
+use crate::error::{LavalinkError, LavalinkResult};
 
 use std::fmt;
 use std::num::ParseIntError;
@@ -28,8 +27,6 @@ use songbird_dep::id::{
 use serde::{Deserialize, Serialize};
 use serde_aux::prelude::*;
 use serde_json::{json, Value};
-
-use futures::{sink::SinkExt, stream::SplitSink};
 
 use async_tungstenite::tungstenite::Message as TungsteniteMessage;
 use parking_lot::RwLock;
@@ -363,8 +360,8 @@ impl ChannelId {
 impl SendOpcode {
     pub async fn send(
         &self,
-        guild_id: impl Into<GuildId>,
-        socket: &mut SplitSink<WsStream, TungsteniteMessage>,
+        guild_id: impl Into<GuildId> + Send,
+        socket: &tokio::sync::mpsc::UnboundedSender<TungsteniteMessage>,
     ) -> LavalinkResult<()> {
         let value = match self {
             Self::Destroy | Self::Stop => {
@@ -425,13 +422,9 @@ impl SendOpcode {
 
         let payload = serde_json::to_string(&value).unwrap();
 
-        {
-            if let Err(why) = socket.send(TungsteniteMessage::text(&payload)).await {
-                return Err(why.into());
-            };
-        }
-
-        Ok(())
+        socket
+            .send(TungsteniteMessage::text(&payload))
+            .map_err(|_| LavalinkError::MissingLavalinkSocket)
     }
 }
 
