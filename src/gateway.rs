@@ -28,7 +28,6 @@ pub trait LavalinkEventHandler {
 pub fn call_discord_gateway(lavalink: &LavalinkClient, message: String) {
     lavalink
         .discord_gateway_data()
-        .lock()
         .sender
         .send(message)
         .unwrap();

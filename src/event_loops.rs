@@ -51,8 +51,9 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
     let rec_seq = Arc::new(RwLock::new(0_usize));
 
     loop {
-        let headers = client.discord_gateway_data().lock().headers.clone();
-        let socket_uri = client.discord_gateway_data().lock().socket_uri;
+        let discord_gateway_data = client.discord_gateway_data();
+        let headers = discord_gateway_data.headers.clone();
+        let socket_uri = discord_gateway_data.socket_uri;
 
         let mut url_builder = Request::builder();
 
@@ -75,10 +76,13 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
 
         debug!("Connecting to the discord websocket.");
 
-        let discord_ws = client.discord_gateway_data();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = {
+            let mut inner = client.inner.lock();
+            let (tx, rx) = mpsc::unbounded_channel();
 
-        discord_ws.lock().sender = tx.clone();
+            inner.discord_gateway_data.sender = tx.clone();
+            (tx, rx)
+        };
 
         let first = read.next().await;
 
@@ -308,7 +312,7 @@ pub async fn lavalink_event_loop(
             }
         });
 
-        *client.inner.lock().socket_write.lock() = Some(write_chan);
+        client.inner.lock().socket_write = Some(write_chan);
 
         while let Some(Ok(resp)) = read.next().await {
             if let TungsteniteMessage::Text(x) = &resp {

@@ -107,7 +107,7 @@ pub struct LavalinkClientInner {
     pub headers: HeaderMap,
 
     /// The sender websocket split.
-    pub socket_write: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<TungsteniteMessage>>>>,
+    pub socket_write: Option<UnboundedSender<TungsteniteMessage>>,
     pub socket_uri: String,
 
     //_shard_id: Option<ShardId>,
@@ -115,13 +115,14 @@ pub struct LavalinkClientInner {
     pub loops: Arc<DashSet<u64>>,
 
     #[cfg(feature = "discord-gateway")]
-    pub discord_gateway_data: Arc<Mutex<DiscordGatewayData>>,
+    pub discord_gateway_data: DiscordGatewayData,
     // Unused
     //_region: Option<Region>,
     //_identifier: Option<String>,
 }
 
 #[cfg(feature = "discord-gateway")]
+#[derive(Clone)]
 pub struct DiscordGatewayData {
     pub shard_count: u64,
     pub bot_id: UserId,
@@ -193,7 +194,7 @@ impl LavalinkClient {
 
         #[cfg(feature = "discord-gateway")]
         let discord_gateway_data = {
-            Arc::new(Mutex::new(DiscordGatewayData {
+            DiscordGatewayData {
                 shard_count: builder.shard_count,
                 bot_id: builder.bot_id,
                 bot_token: builder.bot_token.to_string(),
@@ -202,12 +203,12 @@ impl LavalinkClient {
                 sender: mpsc::unbounded_channel().0,
                 connections: Arc::new(DashMap::new()),
                 socket_uri: discord_socket_uri,
-            }))
+            }
         };
 
         let client_inner = LavalinkClientInner {
             headers: lavalink_headers,
-            socket_write: Arc::new(Mutex::new(None)),
+            socket_write: None,
             rest_uri: lavalink_rest_uri,
             nodes: Arc::new(DashMap::new()),
             loops: Arc::new(DashSet::new()),
@@ -242,14 +243,16 @@ impl LavalinkClient {
         Ok(client)
     }
 
-    pub(crate) fn socket_write(&self) -> LavalinkResult<UnboundedSender<TungsteniteMessage>> {
+    /// Returns the inner raw message sender for Lavalink.
+    ///
+    /// # Warning
+    /// This is just an interface into the [`LavalinkClientInner`] attribute, so any warnings on that apply.
+    pub fn socket_write(&self) -> LavalinkResult<UnboundedSender<TungsteniteMessage>> {
         self.inner
             .lock()
             .socket_write
-            .clone()
-            .lock()
             .as_ref()
-            .map(Clone::clone)
+            .cloned()
             .ok_or(LavalinkError::MissingLavalinkSocket)
     }
 
@@ -293,13 +296,14 @@ impl LavalinkClient {
     #[cfg(feature = "discord-gateway")]
     pub async fn start_discord_gateway(&self, wait_time: Option<Duration>) {
         let client_clone = self.clone();
-        let token = self.discord_gateway_data().lock().bot_token.clone();
+        let gw_data = self.discord_gateway_data();
         let wait_time = if let Some(t) = wait_time {
             t
         } else {
-            self.discord_gateway_data().lock().wait_time
+            gw_data.wait_time
         };
 
+        let token = gw_data.bot_token;
         tokio::spawn(async move {
             debug!("Starting discord event loop.");
             discord_event_loop(client_clone, &token, wait_time).await;
@@ -496,7 +500,7 @@ impl LavalinkClient {
     ///     loops.remove(&guild_id.0);
     /// }
     /// ```
-    pub async fn destroy<T: Into<GuildId> + Send>(&self, guild_id: T) -> LavalinkResult<()> {
+    pub async fn destroy(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         let guild_id = guild_id.into();
 
         let socket_write = {
@@ -513,9 +517,6 @@ impl LavalinkClient {
             client
                 .socket_write
                 .clone()
-                .lock()
-                .as_ref()
-                .map(Clone::clone)
                 .ok_or(LavalinkError::MissingLavalinkSocket)?
         };
 
@@ -738,11 +739,9 @@ impl LavalinkClient {
     }
 
     /// Gets the discord gateway data.
-    ///
-    /// Note that the Mutex is from parking lot and it cannot be used across awaits.
     #[cfg(feature = "discord-gateway")]
     #[must_use]
-    pub fn discord_gateway_data(&self) -> Arc<Mutex<DiscordGatewayData>> {
+    pub fn discord_gateway_data(&self) -> DiscordGatewayData {
         self.inner.lock().discord_gateway_data.clone()
     }
 
@@ -750,12 +749,7 @@ impl LavalinkClient {
     #[cfg(feature = "discord-gateway")]
     #[must_use]
     pub fn discord_gateway_connections(&self) -> Arc<DashMap<GuildId, ConnectionInfo>> {
-        self.inner
-            .lock()
-            .discord_gateway_data
-            .lock()
-            .connections
-            .clone()
+        self.inner.lock().discord_gateway_data.connections.clone()
     }
 
     #[cfg(feature = "discord-gateway")]

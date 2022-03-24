@@ -249,8 +249,7 @@ impl PlayParameters {
                                 end_time: track.end_time,
                             };
 
-                            let socket_write =
-                                client_clone.inner.lock().socket_write.lock().clone();
+                            let socket_write = client_clone.inner.lock().socket_write.clone();
 
                             if let Some(socket) = socket_write.as_ref() {
                                 if let Err(why) = crate::model::SendOpcode::Play(payload)

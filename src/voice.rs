@@ -119,7 +119,7 @@ pub async fn raw_handle_event_voice_server_update(
         endpoint
     };
 
-    let connections = lavalink.discord_gateway_data().lock().connections.clone();
+    let connections = lavalink.discord_gateway_data().connections;
 
     if let Some(mut connection) = connections.get_mut(&guild_id) {
         connection.guild_id = Some(guild_id);
@@ -178,16 +178,13 @@ pub fn raw_handle_event_voice_state_update(
     let user_id = user_id.into();
     let channel_id = channel_id.map(std::convert::Into::into);
 
-    let gateway_data = lavalink.discord_gateway_data();
-    let ws_data = gateway_data.lock();
+    let ws_data = lavalink.discord_gateway_data();
 
     if user_id != ws_data.bot_id {
         return;
     }
 
-    let connections = ws_data.connections.clone();
-
-    drop(ws_data);
+    let connections = ws_data.connections;
 
     if channel_id.is_none() {
         connections.remove(&guild_id);
