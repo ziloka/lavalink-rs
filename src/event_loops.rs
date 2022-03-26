@@ -19,7 +19,7 @@ use std::time::Duration;
 #[cfg(feature = "discord-gateway")]
 use tokio::sync::mpsc;
 
-use tungstenite::handshake::client::generate_key;
+use tungstenite::{client::IntoClientRequest};
 use async_tungstenite::tungstenite::Message as TungsteniteMessage;
 
 #[cfg(feature = "discord-gateway")]
@@ -277,21 +277,14 @@ pub async fn lavalink_event_loop(
     loop {
         debug!("Starting lavalink event loop.");
 
-        let mut url_builder = Request::builder();
+        let mut request = client.inner.lock().socket_uri
+            .parse::<reqwest::Url>().unwrap()
+            .into_client_request().unwrap();
 
-        {
-            let ref_headers = url_builder.headers_mut().unwrap();
-            let headers = client.inner.lock().headers.clone();
-            *ref_headers = headers.clone();
-        }
+        let ref_headers = request.headers_mut();
+        ref_headers.extend(client.inner.lock().headers.clone());
 
-        let url = url_builder
-            .uri(client.inner.lock().socket_uri.clone())
-            .header("sec-websocket-key", generate_key())
-            .body(())
-            .unwrap();
-
-        let (ws_stream, _) = match connect_async(url).await {
+        let (ws_stream, _) = match connect_async(request).await {
             Err(why) => {
                 error!("Failed to connect to lavalink gateway: {}", why);
 
