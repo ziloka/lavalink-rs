@@ -15,9 +15,7 @@ use serenity_dep::model::id::{
 };
 
 #[cfg(feature = "twilight")]
-use twilight_model::id::{
-    ChannelId as TwilightChannelId, GuildId as TwilightGuildId, UserId as TwilightUserId,
-};
+use twilight_model::id::{marker::{GuildMarker, UserMarker, ChannelMarker}, Id};
 
 #[cfg(feature = "songbird")]
 use songbird_dep::id::{
@@ -141,9 +139,9 @@ impl From<SerenityGuildId> for GuildId {
 }
 
 #[cfg(feature = "twilight")]
-impl From<TwilightGuildId> for GuildId {
-    fn from(guild_id: TwilightGuildId) -> GuildId {
-        GuildId(guild_id.0)
+impl From<Id<GuildMarker>> for GuildId {
+    fn from(guild_id: Id<GuildMarker>) -> GuildId {
+        GuildId(guild_id.get())
     }
 }
 
@@ -174,9 +172,9 @@ impl From<SerenityUserId> for UserId {
 }
 
 #[cfg(feature = "twilight")]
-impl From<TwilightUserId> for UserId {
-    fn from(user_id: TwilightUserId) -> UserId {
-        UserId(user_id.0)
+impl From<Id<UserMarker>> for UserId {
+    fn from(user_id: Id<UserMarker>) -> UserId {
+        UserId(user_id.get())
     }
 }
 
@@ -207,9 +205,9 @@ impl From<SerenityChannelId> for ChannelId {
 }
 
 #[cfg(feature = "twilight")]
-impl From<TwilightChannelId> for ChannelId {
-    fn from(channel_id: TwilightChannelId) -> ChannelId {
-        ChannelId(channel_id.0)
+impl From<Id<ChannelMarker>> for ChannelId {
+    fn from(channel_id: Id<ChannelMarker>) -> ChannelId {
+        ChannelId(channel_id.get())
     }
 }
 
@@ -284,8 +282,8 @@ impl GuildId {
     #[inline]
     #[cfg(feature = "twilight")]
     #[must_use]
-    pub fn to_twilight(&self) -> TwilightGuildId {
-        TwilightGuildId(self.0)
+    pub fn to_twilight(&self) -> Id<ChannelMarker> {
+        Id::new(self.0)
     }
 
     #[inline]
@@ -312,8 +310,8 @@ impl UserId {
     #[inline]
     #[cfg(feature = "twilight")]
     #[must_use]
-    pub fn to_twilight(&self) -> TwilightUserId {
-        TwilightUserId(self.0)
+    pub fn to_twilight(&self) -> Id<UserMarker> {
+        Id::new(self.0)
     }
 
     #[inline]
@@ -340,8 +338,8 @@ impl ChannelId {
     #[inline]
     #[cfg(feature = "twilight")]
     #[must_use]
-    pub fn to_twilight(&self) -> TwilightChannelId {
-        TwilightChannelId(self.0)
+    pub fn to_twilight(&self) -> Id<ChannelMarker> {
+        Id::new(self.0)
     }
 
     #[inline]
