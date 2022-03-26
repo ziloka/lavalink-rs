@@ -19,6 +19,7 @@ use std::time::Duration;
 #[cfg(feature = "discord-gateway")]
 use tokio::sync::mpsc;
 
+use tungstenite::handshake::client::generate_key;
 use async_tungstenite::tungstenite::Message as TungsteniteMessage;
 
 #[cfg(feature = "discord-gateway")]
@@ -286,6 +287,7 @@ pub async fn lavalink_event_loop(
 
         let url = url_builder
             .uri(client.inner.lock().socket_uri.clone())
+            .header("sec-websocket-key", generate_key())
             .body(())
             .unwrap();
 
