@@ -241,6 +241,7 @@ impl PlayParameters {
                             let track = node.queue[0].clone();
 
                             node.now_playing = Some(node.queue[0].clone());
+                            drop(node);
 
                             let payload = crate::model::Play {
                                 track: track.track.track.clone(), // track
