@@ -559,7 +559,7 @@ impl LavalinkClient {
         let payload = crate::model::Pause { pause };
 
         {
-            let nodes = self.nodes().await;
+            let nodes = self.nodes();
             let node = nodes.get_mut(&guild_id);
             if let Some(mut n) = node {
                 n.is_paused = pause;
@@ -718,7 +718,7 @@ impl LavalinkClient {
     }
 
     /// Obtains an atomic reference to the nodes
-    pub fn nodes(&self) -> Arc<DashMap<u64, Node>> {
+    #[must_use] pub fn nodes(&self) -> Arc<DashMap<u64, Node>> {
         let client = self.inner.lock();
         client.nodes.clone()
     }

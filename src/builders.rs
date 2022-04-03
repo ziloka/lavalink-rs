@@ -226,7 +226,7 @@ impl PlayParameters {
 
             let client_clone = self.client.clone();
             tokio::spawn(async move {
-                while let Some(mut node) = client_clone.nodes().await.get_mut(&guild_id) {
+                while let Some(mut node) = client_clone.nodes().get_mut(&guild_id) {
                     if !node.queue.is_empty() && node.now_playing.is_none() {
                         let track = node.queue[0].clone();
 
