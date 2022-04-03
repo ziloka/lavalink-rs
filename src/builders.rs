@@ -203,37 +203,27 @@ impl PlayParameters {
             requester: self.requester,
         };
 
-        let client = self.client.clone();
+        let guild_id = self.guild_id;
 
-        let client_lock = client.inner.lock();
+        let client_lock = self.client.inner.lock();
 
-        if !client_lock.loops.contains(&self.guild_id) {
-            let guild_id = self.guild_id;
+        let mut node = client_lock
+            .nodes
+            .get_mut(&guild_id)
+            .ok_or(LavalinkError::NoSessionPresent)?;
 
-            if let Some(mut node) = client_lock.nodes.get_mut(&guild_id) {
-                if node.is_on_loops {
-                    let mut node = client_lock.nodes.get_mut(&self.guild_id).unwrap();
-                    node.queue.push(track);
+        node.queue.push(track);
 
-                    return Ok(());
-                }
-
-                node.is_on_loops = true;
-            } else {
-                return Err(LavalinkError::NoSessionPresent);
+        if !client_lock.loops.contains(&guild_id) {
+            if node.is_on_loops {
+                return Ok(());
             }
 
             client_lock.loops.insert(guild_id);
-
-            {
-                let mut node = client_lock.nodes.get_mut(&guild_id).unwrap();
-                node.queue.push(track);
-            }
-
+            drop(node);
             drop(client_lock);
 
-            let client_clone = client.clone();
-
+            let client_clone = self.client.clone();
             tokio::spawn(async move {
                 loop {
                     if let Some(mut node) = client_clone.nodes().await.get_mut(&guild_id) {
@@ -275,12 +265,7 @@ impl PlayParameters {
                     sleep(Duration::from_secs(1)).await;
                 }
             });
-
-            return Ok(());
         }
-
-        let mut node = client_lock.nodes.get_mut(&self.guild_id).unwrap();
-        node.queue.push(track);
 
         Ok(())
     }
