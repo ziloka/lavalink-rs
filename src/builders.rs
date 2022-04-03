@@ -221,6 +221,8 @@ impl PlayParameters {
 
             node.is_on_loops = true;
             client_lock.loops.insert(guild_id);
+            drop(node);
+            drop(client_lock);
 
             let client_clone = self.client.clone();
             tokio::spawn(async move {
