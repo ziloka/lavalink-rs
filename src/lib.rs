@@ -47,6 +47,7 @@ use event_loops::lavalink_event_loop;
 use gateway::LavalinkEventHandler;
 use model::*;
 
+use std::collections::HashMap;
 use std::{
     cmp::{max, min},
     sync::Arc,
@@ -111,7 +112,7 @@ pub struct LavalinkClientInner {
     pub socket_uri: String,
 
     //_shard_id: Option<ShardId>,
-    pub nodes: Arc<DashMap<u64, Node>>,
+    pub nodes: HashMap<u64, Node>,
     pub loops: Arc<DashSet<u64>>,
 
     #[cfg(feature = "discord-gateway")]
@@ -210,7 +211,7 @@ impl LavalinkClient {
             headers: lavalink_headers,
             socket_write: None,
             rest_uri: lavalink_rest_uri,
-            nodes: Arc::new(DashMap::new()),
+            nodes: HashMap::new(),
             loops: Arc::new(DashSet::new()),
             socket_uri: lavalink_socket_uri,
             #[cfg(feature = "discord-gateway")]
@@ -402,12 +403,11 @@ impl LavalinkClient {
             .send(connection_info.guild_id, &self.socket_write()?)
             .await?;
 
-        let client = self.inner.lock();
-        if !client.nodes.contains_key(&connection_info.guild_id.0) {
-            client
-                .nodes
-                .insert(connection_info.guild_id.0, Node::default());
-        }
+        let mut client = self.inner.lock();
+        client
+            .nodes
+            .entry(connection_info.guild_id.0)
+            .or_insert_with(Node::default);
 
         Ok(())
     }
@@ -452,15 +452,11 @@ impl LavalinkClient {
             .send(connection_info.guild_id.unwrap(), &self.socket_write()?)
             .await?;
 
-        let client = self.inner.lock();
-        if !client
+        let mut client = self.inner.lock();
+        client
             .nodes
-            .contains_key(&connection_info.guild_id.unwrap().0)
-        {
-            client
-                .nodes
-                .insert(connection_info.guild_id.unwrap().0, Node::default());
-        }
+            .entry(connection_info.guild_id.unwrap().0)
+            .or_insert_with(Node::default);
 
         Ok(())
     }
@@ -504,7 +500,7 @@ impl LavalinkClient {
         let guild_id = guild_id.into();
 
         {
-            let client = self.inner.lock();
+            let mut client = self.inner.lock();
 
             if let Some(mut node) = client.nodes.get_mut(&guild_id.0) {
                 node.now_playing = None;
@@ -536,8 +532,7 @@ impl LavalinkClient {
     /// If nothing is in the queue, the currently playing track will keep playing.
     /// Check if the queue is empty and run `stop()` if that's the case.
     pub async fn skip(&self, guild_id: impl Into<GuildId> + Send) -> Option<TrackQueue> {
-        let client = self.inner.lock();
-
+        let mut client = self.inner.lock();
         let mut node = client.nodes.get_mut(&guild_id.into().0)?;
 
         node.now_playing = None;
@@ -559,8 +554,8 @@ impl LavalinkClient {
         let payload = crate::model::Pause { pause };
 
         {
-            let nodes = self.nodes();
-            let node = nodes.get_mut(&guild_id);
+            let mut client = self.inner.lock();
+            let node = client.nodes.get_mut(&guild_id);
             if let Some(mut n) = node {
                 n.is_paused = pause;
             }
@@ -715,12 +710,6 @@ impl LavalinkClient {
             .await?;
 
         Ok(())
-    }
-
-    /// Obtains an atomic reference to the nodes
-    #[must_use] pub fn nodes(&self) -> Arc<DashMap<u64, Node>> {
-        let client = self.inner.lock();
-        client.nodes.clone()
     }
 
     /// Obtains an atomic reference to the running queue loops

@@ -15,7 +15,10 @@ use serenity_dep::model::id::{
 };
 
 #[cfg(feature = "twilight")]
-use twilight_model::id::{marker::{GuildMarker, UserMarker, ChannelMarker}, Id};
+use twilight_model::id::{
+    marker::{ChannelMarker, GuildMarker, UserMarker},
+    Id,
+};
 
 #[cfg(feature = "songbird")]
 use songbird_dep::id::{

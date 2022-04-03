@@ -19,8 +19,8 @@ use std::time::Duration;
 #[cfg(feature = "discord-gateway")]
 use tokio::sync::mpsc;
 
-use tungstenite::{client::IntoClientRequest};
 use async_tungstenite::tungstenite::Message as TungsteniteMessage;
+use tungstenite::client::IntoClientRequest;
 
 #[cfg(feature = "discord-gateway")]
 #[derive(Deserialize)]
@@ -277,9 +277,14 @@ pub async fn lavalink_event_loop(
     loop {
         debug!("Starting lavalink event loop.");
 
-        let mut request = client.inner.lock().socket_uri
-            .parse::<reqwest::Url>().unwrap()
-            .into_client_request().unwrap();
+        let mut request = client
+            .inner
+            .lock()
+            .socket_uri
+            .parse::<reqwest::Url>()
+            .unwrap()
+            .into_client_request()
+            .unwrap();
 
         let ref_headers = request.headers_mut();
         ref_headers.extend(client.inner.lock().headers.clone());
@@ -321,22 +326,20 @@ pub async fn lavalink_event_loop(
                         "playerUpdate" => {
                             if let Ok(player_update) = serde_json::from_str::<PlayerUpdate>(x) {
                                 {
-                                    let client_clone = client.clone();
-                                    let client_lock = client_clone.inner.lock();
-
-                                    if let Some(mut node) =
+                                    let mut client_lock = client.inner.lock();
+                                    if let Some(node) =
                                         client_lock.nodes.get_mut(&player_update.guild_id.0)
                                     {
-                                        if let Some(mut current_track) = node.now_playing.as_mut() {
-                                            let mut info =
-                                                current_track.track.info.as_mut().unwrap().clone();
-                                            info.position = player_update.state.position as u64;
-                                            current_track.track.info = Some(info);
-                                            trace!(
-                                                "Updated track {:?} with position {}",
-                                                current_track.track.info.as_ref().unwrap(),
-                                                player_update.state.position
-                                            );
+                                        if let Some(current_track) = node.now_playing.as_mut() {
+                                            if let Some(info) = current_track.track.info.as_mut() {
+                                                info.position = player_update.state.position as u64;
+
+                                                trace!(
+                                                    "Updated track {:?} with position {}",
+                                                    info,
+                                                    player_update.state.position
+                                                );
+                                            }
                                         }
                                     };
                                 }
@@ -371,7 +374,7 @@ pub async fn lavalink_event_loop(
                             "TrackEndEvent" => {
                                 if let Ok(track_finish) = serde_json::from_str::<TrackFinish>(x) {
                                     if track_finish.reason == "FINISHED" {
-                                        let client_lock = client.inner.lock();
+                                        let mut client_lock = client.inner.lock();
 
                                         if let Some(mut node) =
                                             client_lock.nodes.get_mut(&track_finish.guild_id.0)
