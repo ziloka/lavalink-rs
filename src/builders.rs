@@ -219,49 +219,42 @@ impl PlayParameters {
                 return Ok(());
             }
 
+            node.is_on_loops = true;
             client_lock.loops.insert(guild_id);
-            drop(node);
-            drop(client_lock);
 
             let client_clone = self.client.clone();
             tokio::spawn(async move {
-                loop {
-                    if let Some(mut node) = client_clone.nodes().await.get_mut(&guild_id) {
-                        if !node.queue.is_empty() && node.now_playing.is_none() {
-                            let track = node.queue[0].clone();
+                while let Some(mut node) = client_clone.nodes().await.get_mut(&guild_id) {
+                    if !node.queue.is_empty() && node.now_playing.is_none() {
+                        let track = node.queue[0].clone();
 
-                            node.now_playing = Some(node.queue[0].clone());
-                            drop(node);
+                        node.now_playing = Some(node.queue[0].clone());
+                        drop(node);
 
-                            let payload = crate::model::Play {
-                                track: track.track.track.clone(), // track
-                                no_replace: false,
-                                start_time: track.start_time,
-                                end_time: track.end_time,
-                            };
+                        let payload = crate::model::Play {
+                            track: track.track.track.clone(), // track
+                            no_replace: false,
+                            start_time: track.start_time,
+                            end_time: track.end_time,
+                        };
 
-                            let socket_write = client_clone.inner.lock().socket_write.clone();
+                        let socket_write = client_clone.inner.lock().socket_write.clone();
 
-                            if let Some(socket) = socket_write.as_ref() {
-                                if let Err(why) = crate::model::SendOpcode::Play(payload)
-                                    .send(guild_id, socket)
-                                    .await
-                                {
-                                    error!("Error playing queue on guild {}: {}", guild_id, why);
-                                }
-                            } else {
-                                error!(
-                                    "Error playing queue on guild {}: {}",
-                                    guild_id,
-                                    LavalinkError::MissingLavalinkSocket
-                                );
+                        if let Some(socket) = socket_write.as_ref() {
+                            if let Err(why) = crate::model::SendOpcode::Play(payload)
+                                .send(guild_id, socket)
+                                .await
+                            {
+                                error!("Error playing queue on guild {}: {}", guild_id, why);
                             }
+                        } else {
+                            error!(
+                                "Error playing queue on guild {}: {}",
+                                guild_id,
+                                LavalinkError::MissingLavalinkSocket
+                            );
                         }
-                    } else {
-                        //client.loops.remove(guild_id);
-                        break;
                     }
-
                     sleep(Duration::from_secs(1)).await;
                 }
             });
