@@ -503,7 +503,7 @@ impl LavalinkClient {
     pub async fn destroy(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         let guild_id = guild_id.into();
 
-        let socket_write = {
+        {
             let client = self.inner.lock();
 
             if let Some(mut node) = client.nodes.get_mut(&guild_id.0) {
@@ -512,16 +512,11 @@ impl LavalinkClient {
                 if !node.queue.is_empty() {
                     node.queue.remove(0);
                 }
-            }
-
-            client
-                .socket_write
-                .clone()
-                .ok_or(LavalinkError::MissingLavalinkSocket)?
-        };
+            };
+        }
 
         crate::model::SendOpcode::Destroy
-            .send(guild_id, &socket_write)
+            .send(guild_id, &self.socket_write()?)
             .await?;
 
         Ok(())
