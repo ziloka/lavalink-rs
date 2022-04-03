@@ -718,7 +718,7 @@ impl LavalinkClient {
     }
 
     /// Obtains an atomic reference to the nodes
-    pub async fn nodes(&self) -> Arc<DashMap<u64, Node>> {
+    pub fn nodes(&self) -> Arc<DashMap<u64, Node>> {
         let client = self.inner.lock();
         client.nodes.clone()
     }
