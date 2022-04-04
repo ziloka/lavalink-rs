@@ -176,7 +176,7 @@ impl PlayParameters {
         };
 
         SendOpcode::Play(payload)
-            .send(self.guild_id, &self.client.socket_write()?)
+            .send(self.guild_id, &self.client.socket_write().await?)
             .await?;
 
         Ok(())
@@ -204,7 +204,7 @@ impl PlayParameters {
         };
 
         let guild_id = self.guild_id;
-        let mut client_lock = self.client.inner.lock();
+        let mut client_lock = self.client.inner.lock().await;
 
         if client_lock.loops.contains(&guild_id) {
             let node = client_lock.nodes.get_mut(&guild_id).unwrap();
@@ -230,7 +230,7 @@ impl PlayParameters {
             let client_clone = self.client.clone();
             tokio::spawn(async move {
                 loop {
-                    let mut client_lock = client_clone.inner.lock();
+                    let mut client_lock = client_clone.inner.lock().await;
                     if let Some(mut node) = client_lock.nodes.get_mut(&guild_id) {
                         if !node.queue.is_empty() && node.now_playing.is_none() {
                             let track = node.queue[0].clone();

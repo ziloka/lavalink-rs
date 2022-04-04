@@ -55,7 +55,6 @@ http = "0.2"
 typemap_rev = "0.1"
 dashmap = "5.2"
 async-trait = "0.1"
-parking_lot = "0.12"
 tungstenite = "0.17"
 
 [dependencies.tokio]

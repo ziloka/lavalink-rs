@@ -8,7 +8,8 @@ use async_tungstenite::tokio::connect_async;
 use futures::{stream::StreamExt, SinkExt};
 use http::Request;
 #[cfg(feature = "discord-gateway")]
-use parking_lot::RwLock;
+use tokio::sync::RwLock;
+use std::sync::atomic::Ordering::SeqCst;
 #[cfg(feature = "discord-gateway")]
 use serde::Deserialize;
 #[cfg(feature = "discord-gateway")]
@@ -45,14 +46,16 @@ struct BaseEventNoData {
 #[cfg(feature = "discord-gateway")]
 #[allow(clippy::too_many_lines)]
 pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_time: Duration) {
-    let reconnect = Arc::new(RwLock::new(false));
-    let was_reconnected = Arc::new(RwLock::new(false));
+    use std::sync::atomic::{AtomicUsize, AtomicBool};
+
     let session_id = Arc::new(RwLock::new(String::new()));
-    let seq = Arc::new(RwLock::new(0_usize));
-    let rec_seq = Arc::new(RwLock::new(0_usize));
+    let was_reconnected = Arc::new(AtomicBool::new(false));
+    let reconnect = Arc::new(AtomicBool::new(false));
+    let rec_seq = Arc::new(AtomicUsize::new(0));
+    let seq = Arc::new(AtomicUsize::new(0));
 
     loop {
-        let discord_gateway_data = client.discord_gateway_data();
+        let discord_gateway_data = client.discord_gateway_data().await;
         let headers = discord_gateway_data.headers.clone();
         let socket_uri = discord_gateway_data.socket_uri;
 
@@ -78,7 +81,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
         debug!("Connecting to the discord websocket.");
 
         let (tx, mut rx) = {
-            let mut inner = client.inner.lock();
+            let mut inner = client.inner.lock().await;
             let (tx, rx) = mpsc::unbounded_channel();
 
             inner.discord_gateway_data.sender = tx.clone();
@@ -101,8 +104,8 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
                         tokio::time::sleep(Duration::from_millis(heartbeat.d.heartbeat_interval))
                             .await;
 
-                        if *was_reconnected_clone.read() {
-                            *was_reconnected_clone.write() = false;
+                        if was_reconnected_clone.load(SeqCst) {
+                            was_reconnected_clone.store(false, SeqCst);
                             break;
                         }
 
@@ -118,13 +121,13 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
             None => panic!("Failed to connect to the discord gateway: No Reason Provided"),
         }
 
-        let identify = if *reconnect.read() {
-            *reconnect.write() = false;
-            *was_reconnected.write() = true;
-            let session_id = session_id.read().clone();
-            let seq = *seq.read();
-            let rec_seq_inner = *rec_seq.read();
+        let identify = if reconnect.load(SeqCst) {
+            reconnect.store(false, SeqCst);
+            was_reconnected.store(true, SeqCst);
+            let rec_seq_inner = rec_seq.load(SeqCst);
+            let seq = seq.load(SeqCst);
 
+            let session_id = session_id.read().await.clone();
             warn!(
                 "Session: {}, Seq: {}, Last recon Seq: {}",
                 session_id, seq, rec_seq_inner
@@ -136,7 +139,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
                 break;
             }
 
-            *rec_seq.write() = seq;
+            rec_seq.store(seq, SeqCst);
 
             json!({
                 "op": 6,
@@ -173,12 +176,12 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
         let tx_hb = tx.clone();
         let client_clone = client.clone();
         let session_id_clone = session_id.clone();
-        let seq_clone = seq.clone();
         let reconnect_clone = reconnect.clone();
+        let seq_clone = seq.clone();
 
         tokio::spawn(async move {
             'events: while let Some(Ok(resp)) = read.next().await {
-                if *reconnect_clone.read() {
+                if reconnect_clone.load(SeqCst) {
                     break 'events;
                 }
                 debug!("event: {:#?}", resp);
@@ -187,7 +190,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
                     info!("Close event obtained: {}", resp);
                     let resp_text = resp.to_string();
                     if resp_text.starts_with("Discord") {
-                        *reconnect_clone.write() = true;
+                        reconnect_clone.store(true, SeqCst);
                         tx_hb.send("reconnect".to_string()).unwrap();
                         continue 'events;
                     }
@@ -205,7 +208,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
                 let event_name: BaseEventNoData = serde_json::from_str(&text_resp).unwrap();
 
                 if let Some(s) = event_name.s {
-                    *seq_clone.write() = s;
+                    seq_clone.store(s, SeqCst);
                 }
 
                 match event_name.t.unwrap_or_default().as_str() {
@@ -213,7 +216,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
                         let event: BaseEvent<EventReady> =
                             serde_json::from_str(&text_resp).unwrap();
 
-                        *session_id_clone.write() = event.d.session_id;
+                        *session_id_clone.write().await = event.d.session_id;
                         info!("Lavalink discord gateway ready event received.");
                     }
                     "VOICE_STATE_UPDATE" => {
@@ -228,7 +231,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
                             event.d.channel_id,
                             event.d.user_id,
                             event.d.session_id,
-                        );
+                        ).await;
                     }
                     "VOICE_SERVER_UPDATE" => {
                         let event: BaseEvent<EventVoiceServerUpdate> =
@@ -251,7 +254,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
             }
 
             // Guarentee reconnect
-            *reconnect_clone.write() = true;
+            reconnect_clone.store(true, SeqCst);
             drop(tx_hb.send("reconnect".to_string()));
 
             warn!("Stopped getting events.");
@@ -279,7 +282,7 @@ pub async fn lavalink_event_loop(
 
         let mut request = client
             .inner
-            .lock()
+            .lock().await
             .socket_uri
             .parse::<reqwest::Url>()
             .unwrap()
@@ -288,7 +291,7 @@ pub async fn lavalink_event_loop(
 
         let ref_headers = request.headers_mut();
         {
-            let client = client.inner.lock();
+            let client = client.inner.lock().await;
             ref_headers.extend(client.headers.clone());
         }
 
@@ -315,7 +318,7 @@ pub async fn lavalink_event_loop(
             }
         });
 
-        client.inner.lock().socket_write = Some(write_chan);
+        client.inner.lock().await.socket_write = Some(write_chan);
 
         while let Some(Ok(resp)) = read.next().await {
             if let TungsteniteMessage::Text(x) = &resp {
@@ -329,7 +332,7 @@ pub async fn lavalink_event_loop(
                         "playerUpdate" => {
                             if let Ok(player_update) = serde_json::from_str::<PlayerUpdate>(x) {
                                 {
-                                    let mut client_lock = client.inner.lock();
+                                    let mut client_lock = client.inner.lock().await;
                                     if let Some(node) =
                                         client_lock.nodes.get_mut(&player_update.guild_id.0)
                                     {
@@ -377,7 +380,7 @@ pub async fn lavalink_event_loop(
                             "TrackEndEvent" => {
                                 if let Ok(track_finish) = serde_json::from_str::<TrackFinish>(x) {
                                     if track_finish.reason == "FINISHED" {
-                                        let mut client_lock = client.inner.lock();
+                                        let mut client_lock = client.inner.lock().await;
 
                                         if let Some(mut node) =
                                             client_lock.nodes.get_mut(&track_finish.guild_id.0)

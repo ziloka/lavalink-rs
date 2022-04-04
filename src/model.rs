@@ -30,7 +30,6 @@ use serde_aux::prelude::*;
 use serde_json::{json, Value};
 
 use async_tungstenite::tungstenite::Message as TungsteniteMessage;
-use parking_lot::RwLock;
 
 fn merge(a: &mut Value, b: Value) {
     match (a, b) {
@@ -442,7 +441,7 @@ pub struct Node {
     /// Use this to store whatever information you wish that's guild specific, such as invocation
     /// channel id's, for example.
     #[serde(skip)]
-    pub data: Arc<RwLock<TypeMap>>,
+    pub data: Arc<tokio::sync::RwLock<TypeMap>>,
 }
 
 impl Default for Node {
@@ -454,7 +453,7 @@ impl Default for Node {
             volume: 100,
             queue: vec![],
             is_on_loops: false,
-            data: Arc::new(RwLock::new(TypeMap::new())),
+            data: Arc::new(tokio::sync::RwLock::new(TypeMap::new())),
         }
     }
 }
