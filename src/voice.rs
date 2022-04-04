@@ -27,7 +27,8 @@ pub async fn join(
             }}"#,
             guild_id.0, channel_id.0
         ),
-    ).await;
+    )
+    .await;
 
     wait_for_full_connection_info_insert(lavalink, guild_id, None).await
 }
@@ -52,7 +53,8 @@ pub async fn leave(
             }}"#,
             guild_id.0,
         ),
-    ).await;
+    )
+    .await;
 
     wait_for_connection_info_remove(lavalink, guild_id, None).await
 }
@@ -63,7 +65,7 @@ pub async fn wait_for_full_connection_info_insert(
     event_count: Option<usize>,
 ) -> LavalinkResult<ConnectionInfo> {
     let guild_id = guild_id.into();
-    let connections = lavalink.discord_gateway_connections().await;
+    let connections = lavalink.discord_gateway_connections();
 
     let mut check_count = 0;
 
@@ -88,7 +90,7 @@ pub async fn wait_for_connection_info_remove(
     event_count: Option<usize>,
 ) -> LavalinkResult<()> {
     let guild_id = guild_id.into();
-    let connections = lavalink.discord_gateway_connections().await;
+    let connections = lavalink.discord_gateway_connections();
 
     let mut check_count = 0;
 
@@ -119,7 +121,7 @@ pub async fn raw_handle_event_voice_server_update(
         endpoint
     };
 
-    let connections = lavalink.discord_gateway_data().await.connections;
+    let connections = lavalink.discord_gateway_data().connections;
 
     if let Some(mut connection) = connections.get_mut(&guild_id) {
         connection.guild_id = Some(guild_id);
@@ -167,7 +169,7 @@ pub async fn raw_handle_event_voice_server_update(
     });
 }
 
-pub async fn raw_handle_event_voice_state_update(
+pub fn raw_handle_event_voice_state_update(
     lavalink: &LavalinkClient,
     guild_id: impl Into<GuildId> + Send,
     channel_id: Option<impl Into<ChannelId> + Send>,
@@ -178,7 +180,7 @@ pub async fn raw_handle_event_voice_state_update(
     let user_id = user_id.into();
     let channel_id = channel_id.map(std::convert::Into::into);
 
-    let ws_data = lavalink.discord_gateway_data().await;
+    let ws_data = lavalink.discord_gateway_data();
 
     if user_id != ws_data.bot_id {
         return;

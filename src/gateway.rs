@@ -28,8 +28,9 @@ pub trait LavalinkEventHandler {
 pub async fn call_discord_gateway(lavalink: &LavalinkClient, message: String) {
     lavalink
         .discord_gateway_data()
-        .await
         .sender
+        .read()
+        .await
         .send(message)
         .unwrap();
 }

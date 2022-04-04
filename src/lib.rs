@@ -32,6 +32,7 @@ pub mod voice;
 
 /// Re-export to be used with the event handler.
 pub use async_trait::async_trait;
+use dashmap::DashSet;
 use tokio::sync::mpsc::UnboundedSender;
 /// Re-export to be used with the Node data.
 pub use typemap_rev;
@@ -47,8 +48,6 @@ use event_loops::lavalink_event_loop;
 use gateway::LavalinkEventHandler;
 use model::*;
 
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::{
     cmp::{max, min},
     sync::Arc,
@@ -65,8 +64,8 @@ use tokio_native_tls::TlsStream;
 #[cfg(feature = "rustls")]
 use tokio_rustls::client::TlsStream;
 
-use tokio::sync::Mutex;
 use tokio::net::TcpStream;
+use tokio::sync::RwLock;
 
 use regex::Regex;
 
@@ -109,12 +108,12 @@ pub struct LavalinkClientInner {
     pub headers: HeaderMap,
 
     /// The sender websocket split.
-    pub socket_write: Option<UnboundedSender<TungsteniteMessage>>,
+    pub socket_write: RwLock<Option<UnboundedSender<TungsteniteMessage>>>,
     pub socket_uri: String,
 
     //_shard_id: Option<ShardId>,
-    pub nodes: HashMap<u64, Node>,
-    pub loops: HashSet<u64>,
+    pub nodes: DashMap<u64, Node>,
+    pub loops: DashSet<u64>,
 
     #[cfg(feature = "discord-gateway")]
     pub discord_gateway_data: DiscordGatewayData,
@@ -131,7 +130,7 @@ pub struct DiscordGatewayData {
     pub bot_token: String,
     pub wait_time: Duration,
     pub headers: HeaderMap,
-    pub sender: mpsc::UnboundedSender<String>,
+    pub sender: Arc<RwLock<mpsc::UnboundedSender<String>>>,
     pub connections: Arc<DashMap<GuildId, ConnectionInfo>>,
     pub socket_uri: &'static str,
 }
@@ -144,7 +143,7 @@ pub struct DiscordGatewayData {
 #[derive(Clone)]
 pub struct LavalinkClient {
     /// Field is public for those who want to do their own implementation of things.
-    pub inner: Arc<Mutex<LavalinkClientInner>>,
+    pub inner: Arc<LavalinkClientInner>,
 }
 
 impl LavalinkClient {
@@ -202,7 +201,7 @@ impl LavalinkClient {
                 bot_token: builder.bot_token.to_string(),
                 wait_time: builder.gateway_start_wait_time,
                 headers: discord_headers,
-                sender: mpsc::unbounded_channel().0,
+                sender: Arc::new(RwLock::new(mpsc::unbounded_channel().0)),
                 connections: Arc::new(DashMap::new()),
                 socket_uri: discord_socket_uri,
             }
@@ -210,17 +209,17 @@ impl LavalinkClient {
 
         let client_inner = LavalinkClientInner {
             headers: lavalink_headers,
-            socket_write: None,
+            socket_write: RwLock::new(None),
             rest_uri: lavalink_rest_uri,
-            nodes: HashMap::new(),
-            loops: HashSet::new(),
+            nodes: DashMap::new(),
+            loops: DashSet::new(),
             socket_uri: lavalink_socket_uri,
             #[cfg(feature = "discord-gateway")]
             discord_gateway_data,
         };
 
         let client = Self {
-            inner: Arc::new(Mutex::new(client_inner)),
+            inner: Arc::new(client_inner),
         };
 
         let client_clone = client.clone();
@@ -251,9 +250,9 @@ impl LavalinkClient {
     /// This is just an interface into the [`LavalinkClientInner`] attribute, so any warnings on that apply.
     pub async fn socket_write(&self) -> LavalinkResult<UnboundedSender<TungsteniteMessage>> {
         self.inner
-            .lock()
-            .await
             .socket_write
+            .read()
+            .await
             .as_ref()
             .cloned()
             .ok_or(LavalinkError::MissingLavalinkSocket)
@@ -297,9 +296,9 @@ impl LavalinkClient {
     ///
     /// If `wait_time` is passed, it will override the previosuly configured wait time.
     #[cfg(feature = "discord-gateway")]
-    pub async fn start_discord_gateway(&self, wait_time: Option<Duration>) {
+    pub fn start_discord_gateway(&self, wait_time: Option<Duration>) {
         let client_clone = self.clone();
-        let gw_data = self.discord_gateway_data().await;
+        let gw_data = self.discord_gateway_data();
         let wait_time = if let Some(t) = wait_time {
             t
         } else {
@@ -316,14 +315,11 @@ impl LavalinkClient {
 
     /// Returns the tracks from the URL or query provided.
     pub async fn get_tracks(&self, query: impl ToString + Send) -> LavalinkResult<Tracks> {
-        let (rest_uri, headers) = {
-            let client = self.inner.lock().await;
-            (client.rest_uri.to_string(), client.headers.clone())
-        };
+        let headers = self.inner.headers.clone();
 
         let reqwest = ReqwestClient::new();
         let url = Url::parse_with_params(
-            &format!("{}/loadtracks", rest_uri),
+            &format!("{}/loadtracks", &self.inner.rest_uri),
             &[("identifier", &query.to_string())],
         )
         .expect("The query cannot be formatted to a url.");
@@ -358,14 +354,11 @@ impl LavalinkClient {
 
     /// Decodes a track to it's information
     pub async fn decode_track(&self, track: impl ToString + Send) -> LavalinkResult<Info> {
-        let (rest_uri, headers) = {
-            let client = self.inner.lock().await;
-            (client.rest_uri.to_string(), client.headers.clone())
-        };
+        let headers = self.inner.headers.clone();
 
         let reqwest = ReqwestClient::new();
         let url = Url::parse_with_params(
-            &format!("{}/decodetrack", &rest_uri),
+            &format!("{}/decodetrack", &self.inner.rest_uri),
             &[("track", &track.to_string())],
         )
         .expect("The query cannot be formatted to a url.");
@@ -405,8 +398,7 @@ impl LavalinkClient {
             .send(connection_info.guild_id, &self.socket_write().await?)
             .await?;
 
-        let mut client = self.inner.lock().await;
-        client
+        self.inner
             .nodes
             .entry(connection_info.guild_id.0)
             .or_insert_with(Node::default);
@@ -451,11 +443,13 @@ impl LavalinkClient {
         let payload = crate::model::VoiceUpdate { session_id, event };
 
         crate::model::SendOpcode::VoiceUpdate(payload)
-            .send(connection_info.guild_id.unwrap(), &self.socket_write().await?)
+            .send(
+                connection_info.guild_id.unwrap(),
+                &self.socket_write().await?,
+            )
             .await?;
 
-        let mut client = self.inner.lock().await;
-        client
+        self.inner
             .nodes
             .entry(connection_info.guild_id.unwrap().0)
             .or_insert_with(Node::default);
@@ -500,18 +494,13 @@ impl LavalinkClient {
     /// ```
     pub async fn destroy(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         let guild_id = guild_id.into();
+        if let Some(mut node) = self.inner.nodes.get_mut(&guild_id.0) {
+            node.now_playing = None;
 
-        {
-            let mut client = self.inner.lock().await;
-
-            if let Some(mut node) = client.nodes.get_mut(&guild_id.0) {
-                node.now_playing = None;
-
-                if !node.queue.is_empty() {
-                    node.queue.remove(0);
-                }
-            };
-        }
+            if !node.queue.is_empty() {
+                node.queue.remove(0);
+            }
+        };
 
         crate::model::SendOpcode::Destroy
             .send(guild_id, &self.socket_write().await?)
@@ -534,8 +523,7 @@ impl LavalinkClient {
     /// If nothing is in the queue, the currently playing track will keep playing.
     /// Check if the queue is empty and run `stop()` if that's the case.
     pub async fn skip(&self, guild_id: impl Into<GuildId> + Send) -> Option<TrackQueue> {
-        let mut client = self.inner.lock().await;
-        let mut node = client.nodes.get_mut(&guild_id.into().0)?;
+        let mut node = self.inner.nodes.get_mut(&guild_id.into().0)?;
 
         node.now_playing = None;
 
@@ -555,12 +543,8 @@ impl LavalinkClient {
         let guild_id = guild_id.into().0;
         let payload = crate::model::Pause { pause };
 
-        {
-            let mut client = self.inner.lock().await;
-            let node = client.nodes.get_mut(&guild_id);
-            if let Some(mut n) = node {
-                n.is_paused = pause;
-            }
+        if let Some(mut n) = self.inner.nodes.get_mut(&guild_id) {
+            n.is_paused = pause;
         }
 
         crate::model::SendOpcode::Pause(payload)
@@ -716,14 +700,16 @@ impl LavalinkClient {
 
     /// Gets the discord gateway data.
     #[cfg(feature = "discord-gateway")]
-    pub async fn discord_gateway_data(&self) -> DiscordGatewayData {
-        self.inner.lock().await.discord_gateway_data.clone()
+    #[must_use]
+    pub fn discord_gateway_data(&self) -> DiscordGatewayData {
+        self.inner.discord_gateway_data.clone()
     }
 
     /// Gets the list of voice connections from the discord gateway.
     #[cfg(feature = "discord-gateway")]
-    pub async fn discord_gateway_connections(&self) -> Arc<DashMap<GuildId, ConnectionInfo>> {
-        self.inner.lock().await.discord_gateway_data.connections.clone()
+    #[must_use]
+    pub fn discord_gateway_connections(&self) -> Arc<DashMap<GuildId, ConnectionInfo>> {
+        self.inner.discord_gateway_data.connections.clone()
     }
 
     #[cfg(feature = "discord-gateway")]

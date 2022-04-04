@@ -8,17 +8,17 @@ use async_tungstenite::tokio::connect_async;
 use futures::{stream::StreamExt, SinkExt};
 use http::Request;
 #[cfg(feature = "discord-gateway")]
-use tokio::sync::RwLock;
-use std::sync::atomic::Ordering::SeqCst;
-#[cfg(feature = "discord-gateway")]
 use serde::Deserialize;
 #[cfg(feature = "discord-gateway")]
 use serde_json::json;
+use std::sync::atomic::Ordering::SeqCst;
 #[cfg(feature = "discord-gateway")]
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(feature = "discord-gateway")]
 use tokio::sync::mpsc;
+#[cfg(feature = "discord-gateway")]
+use tokio::sync::RwLock;
 
 use async_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tungstenite::client::IntoClientRequest;
@@ -46,7 +46,7 @@ struct BaseEventNoData {
 #[cfg(feature = "discord-gateway")]
 #[allow(clippy::too_many_lines)]
 pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_time: Duration) {
-    use std::sync::atomic::{AtomicUsize, AtomicBool};
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     let session_id = Arc::new(RwLock::new(String::new()));
     let was_reconnected = Arc::new(AtomicBool::new(false));
@@ -55,7 +55,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
     let seq = Arc::new(AtomicUsize::new(0));
 
     loop {
-        let discord_gateway_data = client.discord_gateway_data().await;
+        let discord_gateway_data = client.discord_gateway_data();
         let headers = discord_gateway_data.headers.clone();
         let socket_uri = discord_gateway_data.socket_uri;
 
@@ -81,10 +81,9 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
         debug!("Connecting to the discord websocket.");
 
         let (tx, mut rx) = {
-            let mut inner = client.inner.lock().await;
             let (tx, rx) = mpsc::unbounded_channel();
 
-            inner.discord_gateway_data.sender = tx.clone();
+            *client.inner.discord_gateway_data.sender.write().await = tx.clone();
             (tx, rx)
         };
 
@@ -231,7 +230,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
                             event.d.channel_id,
                             event.d.user_id,
                             event.d.session_id,
-                        ).await;
+                        );
                     }
                     "VOICE_SERVER_UPDATE" => {
                         let event: BaseEvent<EventVoiceServerUpdate> =
@@ -282,18 +281,15 @@ pub async fn lavalink_event_loop(
 
         let mut request = client
             .inner
-            .lock().await
             .socket_uri
+            //            .clone()
             .parse::<reqwest::Url>()
             .unwrap()
             .into_client_request()
             .unwrap();
 
         let ref_headers = request.headers_mut();
-        {
-            let client = client.inner.lock().await;
-            ref_headers.extend(client.headers.clone());
-        }
+        ref_headers.extend(client.inner.headers.clone());
 
         let (ws_stream, _) = match connect_async(request).await {
             Err(why) => {
@@ -318,7 +314,7 @@ pub async fn lavalink_event_loop(
             }
         });
 
-        client.inner.lock().await.socket_write = Some(write_chan);
+        *client.inner.socket_write.write().await = Some(write_chan);
 
         while let Some(Ok(resp)) = read.next().await {
             if let TungsteniteMessage::Text(x) = &resp {
@@ -332,9 +328,8 @@ pub async fn lavalink_event_loop(
                         "playerUpdate" => {
                             if let Ok(player_update) = serde_json::from_str::<PlayerUpdate>(x) {
                                 {
-                                    let mut client_lock = client.inner.lock().await;
-                                    if let Some(node) =
-                                        client_lock.nodes.get_mut(&player_update.guild_id.0)
+                                    if let Some(mut node) =
+                                        client.inner.nodes.get_mut(&player_update.guild_id.0)
                                     {
                                         if let Some(current_track) = node.now_playing.as_mut() {
                                             if let Some(info) = current_track.track.info.as_mut() {
@@ -380,10 +375,8 @@ pub async fn lavalink_event_loop(
                             "TrackEndEvent" => {
                                 if let Ok(track_finish) = serde_json::from_str::<TrackFinish>(x) {
                                     if track_finish.reason == "FINISHED" {
-                                        let mut client_lock = client.inner.lock().await;
-
                                         if let Some(mut node) =
-                                            client_lock.nodes.get_mut(&track_finish.guild_id.0)
+                                            client.inner.nodes.get_mut(&track_finish.guild_id.0)
                                         {
                                             if !node.queue.is_empty() {
                                                 node.queue.remove(0);
