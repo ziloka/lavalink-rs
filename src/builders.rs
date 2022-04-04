@@ -215,16 +215,17 @@ impl PlayParameters {
                     .nodes
                     .get_mut(&guild_id)
                     .ok_or(LavalinkError::NoSessionPresent)?;
+
+                node.queue.push(track);
                 if node.is_on_loops {
-                    node.queue.push(track);
                     return Ok(());
                 }
 
                 node.is_on_loops = true;
-                node.queue.push(track);
             }
 
             client_lock.loops.insert(guild_id);
+            drop(client_lock);
 
             let client_clone = self.client.clone();
             tokio::spawn(async move {
@@ -233,8 +234,9 @@ impl PlayParameters {
                     if let Some(mut node) = client_lock.nodes.get_mut(&guild_id) {
                         if !node.queue.is_empty() && node.now_playing.is_none() {
                             let track = node.queue[0].clone();
-
                             node.now_playing = Some(node.queue[0].clone());
+
+                            let socket_write = client_lock.socket_write.clone();
                             drop(client_lock);
 
                             let payload = crate::model::Play {
@@ -244,11 +246,9 @@ impl PlayParameters {
                                 end_time: track.end_time,
                             };
 
-                            let socket_write = client_clone.inner.lock().socket_write.clone();
-
-                            if let Some(socket) = socket_write.as_ref() {
+                            if let Some(socket) = socket_write {
                                 if let Err(why) = crate::model::SendOpcode::Play(payload)
-                                    .send(guild_id, socket)
+                                    .send(guild_id, &socket)
                                     .await
                                 {
                                     error!("Error playing queue on guild {}: {}", guild_id, why);

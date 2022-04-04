@@ -48,6 +48,7 @@ use gateway::LavalinkEventHandler;
 use model::*;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::{
     cmp::{max, min},
     sync::Arc,
@@ -77,7 +78,7 @@ use async_tungstenite::{
 #[cfg(feature = "discord-gateway")]
 use tokio::sync::mpsc;
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 
 /// All 0's equalizer preset. Default.
 pub const EQ_BASE: [f64; 15] = [
@@ -113,7 +114,7 @@ pub struct LavalinkClientInner {
 
     //_shard_id: Option<ShardId>,
     pub nodes: HashMap<u64, Node>,
-    pub loops: Arc<DashSet<u64>>,
+    pub loops: HashSet<u64>,
 
     #[cfg(feature = "discord-gateway")]
     pub discord_gateway_data: DiscordGatewayData,
@@ -212,7 +213,7 @@ impl LavalinkClient {
             socket_write: None,
             rest_uri: lavalink_rest_uri,
             nodes: HashMap::new(),
-            loops: Arc::new(DashSet::new()),
+            loops: HashSet::new(),
             socket_uri: lavalink_socket_uri,
             #[cfg(feature = "discord-gateway")]
             discord_gateway_data,
@@ -710,16 +711,6 @@ impl LavalinkClient {
             .await?;
 
         Ok(())
-    }
-
-    /// Obtains an atomic reference to the running queue loops
-    ///
-    /// A node `guild_id` is added here the first time [`PlayParameters::queue`] is called.
-    ///
-    /// [`PlayParameters::queue`]: crate::builders::PlayParameters
-    pub async fn loops(&self) -> Arc<DashSet<u64>> {
-        let client = self.inner.lock();
-        client.loops.clone()
     }
 
     /// Gets the discord gateway data.

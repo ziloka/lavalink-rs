@@ -287,7 +287,10 @@ pub async fn lavalink_event_loop(
             .unwrap();
 
         let ref_headers = request.headers_mut();
-        ref_headers.extend(client.inner.lock().headers.clone());
+        {
+            let client = client.inner.lock();
+            ref_headers.extend(client.headers.clone());
+        }
 
         let (ws_stream, _) = match connect_async(request).await {
             Err(why) => {
