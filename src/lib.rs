@@ -32,8 +32,6 @@ pub mod voice;
 
 /// Re-export to be used with the event handler.
 pub use async_trait::async_trait;
-use dashmap::DashSet;
-use tokio::sync::mpsc::UnboundedSender;
 /// Re-export to be used with the Node data.
 pub use typemap_rev;
 
@@ -64,8 +62,10 @@ use tokio_native_tls::TlsStream;
 #[cfg(feature = "rustls")]
 use tokio_rustls::client::TlsStream;
 
-use tokio::net::TcpStream;
-use tokio::sync::RwLock;
+use tokio::{
+    net::TcpStream,
+    sync::{mpsc::UnboundedSender, RwLock},
+};
 
 use regex::Regex;
 
@@ -112,8 +112,7 @@ pub struct LavalinkClientInner {
     pub socket_uri: String,
 
     //_shard_id: Option<ShardId>,
-    pub nodes: DashMap<u64, Node>,
-    pub loops: DashSet<u64>,
+    pub queues: DashMap<GuildId, QueueMessenger>,
 
     #[cfg(feature = "discord-gateway")]
     pub discord_gateway_data: DiscordGatewayData,
@@ -211,8 +210,7 @@ impl LavalinkClient {
             headers: lavalink_headers,
             socket_write: RwLock::new(None),
             rest_uri: lavalink_rest_uri,
-            nodes: DashMap::new(),
-            loops: DashSet::new(),
+            queues: DashMap::new(),
             socket_uri: lavalink_socket_uri,
             #[cfg(feature = "discord-gateway")]
             discord_gateway_data,
@@ -398,11 +396,6 @@ impl LavalinkClient {
             .send(connection_info.guild_id, &self.socket_write().await?)
             .await?;
 
-        self.inner
-            .nodes
-            .entry(connection_info.guild_id.0)
-            .or_insert_with(Node::default);
-
         Ok(())
     }
     #[cfg(feature = "discord-gateway")]
@@ -461,7 +454,7 @@ impl LavalinkClient {
     pub fn play(&self, guild_id: impl Into<GuildId>, track: Track) -> PlayParameters {
         PlayParameters {
             track,
-            guild_id: guild_id.into().0,
+            guild_id: guild_id.into(),
             client: self.clone(),
             replace: false,
             start: 0,
@@ -494,12 +487,12 @@ impl LavalinkClient {
     /// ```
     pub async fn destroy(&self, guild_id: impl Into<GuildId> + Send) -> LavalinkResult<()> {
         let guild_id = guild_id.into();
-        if let Some(mut node) = self.inner.nodes.get_mut(&guild_id.0) {
-            node.now_playing = None;
-
-            if !node.queue.is_empty() {
-                node.queue.remove(0);
-            }
+        if let Some(queue) = self.inner.queues.get(&guild_id) {
+            // Finishes the current track playing
+            if queue.play_next.send(()).is_err() {
+                drop(queue);
+                self.inner.queues.remove(&guild_id);
+            };
         };
 
         crate::model::SendOpcode::Destroy
@@ -519,19 +512,20 @@ impl LavalinkClient {
     }
 
     /// Skips the current playing track to the next item on the queue.
-    ///
-    /// If nothing is in the queue, the currently playing track will keep playing.
-    /// Check if the queue is empty and run `stop()` if that's the case.
-    pub async fn skip(&self, guild_id: impl Into<GuildId> + Send) -> Option<TrackQueue> {
-        let mut node = self.inner.nodes.get_mut(&guild_id.into().0)?;
+    pub async fn skip(&self, guild_id: impl Into<GuildId> + Send) -> Option<()> {
+        let guild_id = guild_id.into();
+        if self
+            .inner
+            .queues
+            .get(&guild_id)?
+            .play_next
+            .send(())
+            .is_err()
+        {
+            self.inner.queues.remove(&guild_id);
+        };
 
-        node.now_playing = None;
-
-        if node.queue.is_empty() {
-            None
-        } else {
-            Some(node.queue.remove(0))
-        }
+        Some(())
     }
 
     /// Sets the pause status.
@@ -542,10 +536,6 @@ impl LavalinkClient {
     ) -> LavalinkResult<()> {
         let guild_id = guild_id.into().0;
         let payload = crate::model::Pause { pause };
-
-        if let Some(mut n) = self.inner.nodes.get_mut(&guild_id) {
-            n.is_paused = pause;
-        }
 
         crate::model::SendOpcode::Pause(payload)
             .send(guild_id, &self.socket_write().await?)

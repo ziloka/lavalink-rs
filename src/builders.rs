@@ -1,12 +1,58 @@
 use crate::error::*;
 use crate::gateway::LavalinkEventHandler;
 use crate::model::*;
-use crate::LavalinkClient;
+use crate::{LavalinkClient, LavalinkClientInner};
 
-use std::{net::SocketAddr, time::Duration};
-//use serenity::model::guild::Region;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use tokio::time::sleep;
+use tokio::sync::mpsc::UnboundedSender;
+
+#[derive(Clone)]
+pub struct QueueMessenger {
+    pub play: UnboundedSender<TrackQueue>,
+    pub play_next: UnboundedSender<()>,
+}
+
+#[must_use]
+pub fn start_queue(client: Arc<LavalinkClientInner>, guild_id: GuildId) -> QueueMessenger {
+    let (play_next, mut recv_next): (UnboundedSender<()>, _) =
+        tokio::sync::mpsc::unbounded_channel();
+    let (send_track, mut recv_track): (UnboundedSender<TrackQueue>, _) =
+        tokio::sync::mpsc::unbounded_channel();
+
+    tokio::spawn(async move {
+        while let Some(track) = recv_track.recv().await {
+            let payload = crate::model::Play {
+                no_replace: false,
+                track: track.track.track,
+                start_time: track.start_time,
+                end_time: track.end_time,
+            };
+
+            if let Some(socket) = client.socket_write.read().await.as_ref() {
+                if let Err(why) = crate::model::SendOpcode::Play(payload)
+                    .send(guild_id, socket)
+                    .await
+                {
+                    error!("Error playing queue on guild {}: {}", guild_id, why);
+                } else {
+                    recv_next.recv().await;
+                }
+            } else {
+                error!(
+                    "Error playing queue on guild {}: {}",
+                    guild_id,
+                    LavalinkError::MissingLavalinkSocket
+                );
+            }
+        }
+    });
+
+    QueueMessenger {
+        play: send_track,
+        play_next,
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LavalinkClientBuilder {
@@ -156,7 +202,7 @@ pub struct PlayParameters {
     pub replace: bool,
     pub start: u64,
     pub finish: u64,
-    pub guild_id: u64,
+    pub guild_id: GuildId,
     pub requester: Option<UserId>,
     pub client: LavalinkClient,
 }
@@ -204,65 +250,14 @@ impl PlayParameters {
         };
 
         let guild_id = self.guild_id;
-        let inner = &self.client.inner;
+        let queue = self
+            .client
+            .inner
+            .queues
+            .entry(guild_id)
+            .or_insert_with(|| start_queue(self.client.inner.clone(), guild_id));
 
-        if inner.loops.contains(&guild_id) {
-            let mut node = inner.nodes.get_mut(&guild_id).unwrap();
-            node.queue.push(track);
-        } else {
-            {
-                let mut node = inner
-                    .nodes
-                    .get_mut(&guild_id)
-                    .ok_or(LavalinkError::NoSessionPresent)?;
-
-                node.queue.push(track);
-                if node.is_on_loops {
-                    return Ok(());
-                }
-
-                node.is_on_loops = true;
-            }
-
-            inner.loops.insert(guild_id);
-
-            let inner_clone = self.client.inner.clone();
-            tokio::spawn(async move {
-                while let Some(mut node) = inner_clone.nodes.get_mut(&guild_id) {
-                    if !node.queue.is_empty() && node.now_playing.is_none() {
-                        let track = node.queue[0].clone();
-                        node.now_playing = Some(node.queue[0].clone());
-                        drop(node);
-
-                        let payload = crate::model::Play {
-                            track: track.track.track.clone(), // track
-                            no_replace: false,
-                            start_time: track.start_time,
-                            end_time: track.end_time,
-                        };
-
-                        if let Some(socket) = inner_clone.socket_write.read().await.as_ref() {
-                            if let Err(why) = crate::model::SendOpcode::Play(payload)
-                                .send(guild_id, socket)
-                                .await
-                            {
-                                error!("Error playing queue on guild {}: {}", guild_id, why);
-                            }
-                        } else {
-                            error!(
-                                "Error playing queue on guild {}: {}",
-                                guild_id,
-                                LavalinkError::MissingLavalinkSocket
-                            );
-                        }
-                    }
-
-                    sleep(Duration::from_secs(1)).await;
-                }
-            });
-        }
-
-        Ok(())
+        queue.play.send(track).map_err(Into::into)
     }
 
     /// Generates a `TrackQueue` from the builder.

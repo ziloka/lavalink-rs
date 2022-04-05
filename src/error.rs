@@ -26,6 +26,7 @@ pub enum LavalinkError {
     Timeout,
     #[cfg(feature = "discord-gateway")]
     MissingConnectionField(&'static str),
+    UnexpectedChannelHangup,
     MissingLavalinkSocket,
 }
 
@@ -61,6 +62,7 @@ impl Display for LavalinkError {
             &LavalinkError::MissingConnectionField(field) => {
                 write!(f, "Gateway connection is missing the field `{}`", field)
             }
+            LavalinkError::UnexpectedChannelHangup => write!(f, "A channel hangup was detected."),
             LavalinkError::MissingLavalinkSocket => {
                 write!(f, "Initialize a lavalink websocket connection.")
             }
@@ -77,6 +79,12 @@ impl From<TungsteniteError> for LavalinkError {
 impl From<InvalidHeaderValue> for LavalinkError {
     fn from(err: InvalidHeaderValue) -> LavalinkError {
         LavalinkError::InvalidHeaderValue(err)
+    }
+}
+
+impl<T> From<tokio::sync::mpsc::error::SendError<T>> for LavalinkError {
+    fn from(_: tokio::sync::mpsc::error::SendError<T>) -> LavalinkError {
+        LavalinkError::UnexpectedChannelHangup
     }
 }
 

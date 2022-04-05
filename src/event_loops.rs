@@ -6,12 +6,10 @@ use crate::LavalinkClient;
 
 use async_tungstenite::tokio::connect_async;
 use futures::{stream::StreamExt, SinkExt};
-use http::Request;
 #[cfg(feature = "discord-gateway")]
 use serde::Deserialize;
 #[cfg(feature = "discord-gateway")]
 use serde_json::json;
-use std::sync::atomic::Ordering::SeqCst;
 #[cfg(feature = "discord-gateway")]
 use std::sync::Arc;
 use std::time::Duration;
@@ -327,24 +325,6 @@ pub async fn lavalink_event_loop(
                         }
                         "playerUpdate" => {
                             if let Ok(player_update) = serde_json::from_str::<PlayerUpdate>(x) {
-                                {
-                                    if let Some(mut node) =
-                                        client.inner.nodes.get_mut(&player_update.guild_id.0)
-                                    {
-                                        if let Some(current_track) = node.now_playing.as_mut() {
-                                            if let Some(info) = current_track.track.info.as_mut() {
-                                                info.position = player_update.state.position as u64;
-
-                                                trace!(
-                                                    "Updated track {:?} with position {}",
-                                                    info,
-                                                    player_update.state.position
-                                                );
-                                            }
-                                        }
-                                    };
-                                }
-
                                 handler.player_update(client.clone(), player_update).await;
                             }
                         }
@@ -375,14 +355,13 @@ pub async fn lavalink_event_loop(
                             "TrackEndEvent" => {
                                 if let Ok(track_finish) = serde_json::from_str::<TrackFinish>(x) {
                                     if track_finish.reason == "FINISHED" {
-                                        if let Some(mut node) =
-                                            client.inner.nodes.get_mut(&track_finish.guild_id.0)
+                                        if let Some(queue) =
+                                            client.inner.queues.get(&track_finish.guild_id)
                                         {
-                                            if !node.queue.is_empty() {
-                                                node.queue.remove(0);
+                                            if let Err(err) = queue.play_next.send(()) {
+                                                error!("Error finishing track: {}", err);
                                             }
-                                            node.now_playing = None;
-                                        };
+                                        }
                                     }
 
                                     handler.track_finish(client.clone(), track_finish).await;

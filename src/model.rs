@@ -2,12 +2,7 @@
 
 use crate::error::{LavalinkError, LavalinkResult};
 
-use std::fmt;
-use std::num::ParseIntError;
-use std::str::FromStr;
-use std::sync::Arc;
-
-use typemap_rev::TypeMap;
+use std::{fmt, num::ParseIntError, str::FromStr};
 
 #[cfg(feature = "serenity")]
 use serenity_dep::model::id::{
@@ -425,36 +420,6 @@ impl SendOpcode {
         socket
             .send(TungsteniteMessage::text(&payload))
             .map_err(|_| LavalinkError::MissingLavalinkSocket)
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Node {
-    pub guild: GuildId,
-
-    pub now_playing: Option<TrackQueue>,
-    pub is_paused: bool,
-    pub volume: u16,
-    pub queue: Vec<TrackQueue>,
-    /// Check used to know if the loop is on Client.loops
-    pub is_on_loops: bool,
-    /// Use this to store whatever information you wish that's guild specific, such as invocation
-    /// channel id's, for example.
-    #[serde(skip)]
-    pub data: Arc<tokio::sync::RwLock<TypeMap>>,
-}
-
-impl Default for Node {
-    fn default() -> Self {
-        Node {
-            guild: GuildId(0),
-            now_playing: None,
-            is_paused: false,
-            volume: 100,
-            queue: vec![],
-            is_on_loops: false,
-            data: Arc::new(tokio::sync::RwLock::new(TypeMap::new())),
-        }
     }
 }
 
