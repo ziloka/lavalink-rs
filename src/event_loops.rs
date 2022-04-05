@@ -6,17 +6,17 @@ use crate::LavalinkClient;
 
 use async_tungstenite::tokio::connect_async;
 use futures::{stream::StreamExt, SinkExt};
+use std::time::Duration;
+
 #[cfg(feature = "discord-gateway")]
 use serde::Deserialize;
 #[cfg(feature = "discord-gateway")]
 use serde_json::json;
 #[cfg(feature = "discord-gateway")]
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, atomic::Ordering::SeqCst};
 #[cfg(feature = "discord-gateway")]
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 #[cfg(feature = "discord-gateway")]
-use tokio::sync::RwLock;
 
 use async_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tungstenite::client::IntoClientRequest;
@@ -57,7 +57,7 @@ pub async fn discord_event_loop(client: LavalinkClient, token: &str, mut wait_ti
         let headers = discord_gateway_data.headers.clone();
         let socket_uri = discord_gateway_data.socket_uri;
 
-        let mut url_builder = Request::builder();
+        let mut url_builder = http::Request::builder();
 
         {
             let ref_headers = url_builder.headers_mut().unwrap();

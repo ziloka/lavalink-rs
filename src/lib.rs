@@ -442,11 +442,6 @@ impl LavalinkClient {
             )
             .await?;
 
-        self.inner
-            .nodes
-            .entry(connection_info.guild_id.unwrap().0)
-            .or_insert_with(Node::default);
-
         Ok(())
     }
 
